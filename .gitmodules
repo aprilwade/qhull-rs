@@ -1,0 +1,4 @@
+[submodule "qhull-sys/qhull"]
+	path = qhull-sys/qhull
+	url = https://github.com/qhull/qhull
+	branch = 2020.2

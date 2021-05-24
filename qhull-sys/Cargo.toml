@@ -1,0 +1,11 @@
+[package]
+name = "qhull-sys"
+version = "0.1.0"
+authors = ["April Wade <wayedt@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+libc = "0.2"
+
+[build-dependencies]
+cc = "1"

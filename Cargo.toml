@@ -1,0 +1,15 @@
+[package]
+name = "qhull-rs"
+version = "0.1.0"
+authors = ["April Wade <wayedt@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+libc = "0.2"
+nalgebra = "0.26"
+qhull-sys = { path = "qhull-sys" }
+
+[workspace]
+members = [
+    "qhull-sys"
+]
