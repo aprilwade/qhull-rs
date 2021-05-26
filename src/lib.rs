@@ -472,6 +472,7 @@ impl<N: DimName> Delaunay<N>
         solver_cache: &BarycentricSolverCache<N>,
         tolerance: Option<f64>,
         barycentric_coords: Option<&mut OVector<f64, DimSum<N, U1>>>,
+        hint: Option<&mut Facet<'a, N>>,
     ) -> Option<Facet<'a, N>>
         where DefaultAllocator: Allocator<f64, DimSum<N, U1>, DimSum<N, U1>>,
               DefaultAllocator: Allocator<f64, DimSum<N, U1>>,
@@ -505,18 +506,15 @@ impl<N: DimName> Delaunay<N>
 
         // Try to move to the approximately right location by repeatedly checking if any of the
         // current simplex's neighbors are closer to the point and moving to it
-        let mut simplex = self.full_simplices().filter(|s| !s.is_upper_delaunay()).next()?;
-        let mut best_distance = unsafe {
-            let mut dist = 1.0;
-            // TODO: Compute this ourselves
-            qhull_sys::qh_distplane(
-                self.cv.qh.as_ptr(),
-                projected_point.as_mut_ptr(),
-                simplex.ptr.as_ptr(),
-                &mut dist
-            );
-            dist
+        let mut simplex = if let Some(hint) = &hint {
+            Facet {
+                ptr: hint.ptr,
+                pd: PhantomData,
+            }
+        } else {
+            self.full_simplices().filter(|s| !s.is_upper_delaunay()).next()?
         };
+        let mut best_distance = simplex.plane_distance(&projected_point);
         let mut changed = true;
         while changed && best_distance <= 0.0 {
             changed = false;
@@ -534,9 +532,9 @@ impl<N: DimName> Delaunay<N>
             }
         }
 
-        projected_point[N::dim() - 1] = 1.0;
-        let mat = &solver_cache.0[simplex.id() as usize].as_ref().unwrap().mat;
-        'outer: for _cycle in 0..(self.vertices().count() / 4) {
+        projected_point[N::dim()] = 1.0;
+        'outer: for _cycle in 0..(solver_cache.0.len() / 4 + 1) {
+            let mat = &solver_cache.0[simplex.id() as usize].as_ref().unwrap().mat;
             let mut inside = true;
             // Compute each barycentric coordinate one at a time
             let iter = mat.row_iter().zip(simplex.neighbors()).zip(barycentric_coords.iter_mut());
@@ -544,10 +542,16 @@ impl<N: DimName> Delaunay<N>
                 let coord = (row * &projected_point)[(0, 0)];
                 if coord < -tolerance {
                     // Find the neighbor corresponding to the coord
-                    simplex = neighbor;
-                    if simplex.is_upper_delaunay() {
+                    if neighbor.is_upper_delaunay() {
+                        if let Some(hint) = hint {
+                            *hint = Facet {
+                                ptr: simplex.ptr,
+                                pd: PhantomData
+                            };
+                        }
                         return None;
                     }
+                    simplex = neighbor;
                     continue 'outer;
                 } else if !(coord <= 1.0 + tolerance) {
                     // Keep looking for a negative coordinate but note this isn't a match
@@ -560,10 +564,14 @@ impl<N: DimName> Delaunay<N>
 
             if inside {
                 // Success
-                return Some(Facet {
+                let f = Facet {
                     ptr: simplex.ptr,
                     pd: PhantomData,
-                })
+                };
+                if let Some(hint) = hint {
+                    *hint = f;
+                }
+                return Some(f)
             }
 
             // We weren't inside the simplex and we didn't find a negative barycentric coordinate,
@@ -571,7 +579,13 @@ impl<N: DimName> Delaunay<N>
             break;
         }
 
-        self.find_best_simplex_bruteforce(point, solver_cache, tolerance, barycentric_coords)
+        let f = self.find_best_simplex_bruteforce(point, solver_cache, tolerance, barycentric_coords);
+        if let Some(f) = f {
+            if let Some(hint) = hint {
+                *hint = f;
+            }
+        }
+        f
     }
 
     fn find_best_simplex_bruteforce<'a>(
@@ -798,7 +812,8 @@ fn test_delaunay_find_simplex_2d() {
         [1.1, 1.9].into(),
         &solver_cache,
         None,
-        Some(&mut barycentric_coords)
+        Some(&mut barycentric_coords),
+        None
     ).unwrap();
     let mut points = simplex.vertices().map(|v| v.point()).collect::<Vec<_>>();
     points.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -812,7 +827,8 @@ fn test_delaunay_find_simplex_2d() {
         [1.9, 1.1].into(),
         &solver_cache,
         None,
-        Some(&mut barycentric_coords)
+        Some(&mut barycentric_coords),
+        None
     ).unwrap();
     let mut points = simplex.vertices().map(|v| v.point()).collect::<Vec<_>>();
     points.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -824,7 +840,7 @@ fn test_delaunay_find_simplex_2d() {
         [0.1, 0.8, 0.1],
     );
 
-    assert_eq!(None, tri.find_best_simplex([1.9, 2.1].into(), &solver_cache, None, None))
+    assert_eq!(None, tri.find_best_simplex([1.9, 2.1].into(), &solver_cache, None, None, None))
 }
 
 #[test]
@@ -945,7 +961,8 @@ fn test_delaunay_4d_find_simplex() {
         [15.0, 29.0, 14.0, 24.0].into(),
         &solver_cache,
         None,
-        Some(&mut barycentric_coords)
+        Some(&mut barycentric_coords),
+        None,
     ).unwrap();
     let mut points = simplex.vertices().map(|v| v.point()).collect::<Vec<_>>();
     points.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -968,7 +985,8 @@ fn test_delaunay_4d_find_simplex() {
         [32.0, 19.0, 15.0, 18.0].into(),
         &solver_cache,
         None,
-        Some(&mut barycentric_coords)
+        Some(&mut barycentric_coords),
+        None,
     ).unwrap();
     let mut points = simplex.vertices().map(|v| v.point()).collect::<Vec<_>>();
     points.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -991,7 +1009,8 @@ fn test_delaunay_4d_find_simplex() {
         [29.0, 17.0, 10.0, 17.0].into(),
         &solver_cache,
         None,
-        Some(&mut barycentric_coords)
+        Some(&mut barycentric_coords),
+        None,
     ).unwrap();
     let mut points = simplex.vertices().map(|v| v.point()).collect::<Vec<_>>();
     points.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -1014,7 +1033,8 @@ fn test_delaunay_4d_find_simplex() {
         [35.0, 35.0, 31.0, 25.0].into(),
         &solver_cache,
         None,
-        Some(&mut barycentric_coords)
+        Some(&mut barycentric_coords),
+        None,
     ).unwrap();
     let mut points = simplex.vertices().map(|v| v.point()).collect::<Vec<_>>();
     points.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -1037,7 +1057,8 @@ fn test_delaunay_4d_find_simplex() {
         [34.0, 27.0, 24.0, 19.0].into(),
         &solver_cache,
         None,
-        Some(&mut barycentric_coords)
+        Some(&mut barycentric_coords),
+        None,
     ).unwrap();
     let mut points = simplex.vertices().map(|v| v.point()).collect::<Vec<_>>();
     points.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -1060,7 +1081,8 @@ fn test_delaunay_4d_find_simplex() {
         [34.0, 34.0, 28.0, 22.0].into(),
         &solver_cache,
         None,
-        Some(&mut barycentric_coords)
+        Some(&mut barycentric_coords),
+        None,
     ).unwrap();
     let mut points = simplex.vertices().map(|v| v.point()).collect::<Vec<_>>();
     points.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -1083,7 +1105,8 @@ fn test_delaunay_4d_find_simplex() {
         [33.0, 31.0, 29.0, 20.0].into(),
         &solver_cache,
         None,
-        Some(&mut barycentric_coords)
+        Some(&mut barycentric_coords),
+        None,
     ).unwrap();
     let mut points = simplex.vertices().map(|v| v.point()).collect::<Vec<_>>();
     points.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -1106,7 +1129,8 @@ fn test_delaunay_4d_find_simplex() {
         [40.0, 30.0, 32.0, 23.0].into(),
         &solver_cache,
         None,
-        Some(&mut barycentric_coords)
+        Some(&mut barycentric_coords),
+        None,
     ).unwrap();
     let mut points = simplex.vertices().map(|v| v.point()).collect::<Vec<_>>();
     points.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -1129,7 +1153,8 @@ fn test_delaunay_4d_find_simplex() {
         [41.0, 30.0, 31.0, 21.0].into(),
         &solver_cache,
         None,
-        Some(&mut barycentric_coords)
+        Some(&mut barycentric_coords),
+        None,
     ).unwrap();
     let mut points = simplex.vertices().map(|v| v.point()).collect::<Vec<_>>();
     points.sort_by(|a, b| a.partial_cmp(b).unwrap());
